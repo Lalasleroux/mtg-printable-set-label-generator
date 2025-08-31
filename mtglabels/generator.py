@@ -12,17 +12,39 @@ import requests
 log = logging.getLogger(__name__)
 
 BASE_DIR = Path(os.path.abspath(os.path.dirname(__file__)))
-CAIRO_DLL_DIR = r'C:\Program Files\GTK3-Runtime Win64\bin'
+CAIRO_DLL_DIR = os.environ.get(
+    "CAIRO_DLL_DIR", r"C:\\Program Files\\GTK3-Runtime Win64\\bin"
+)
 
 ENV = jinja2.Environment(
     loader=jinja2.FileSystemLoader(BASE_DIR / "templates"),
     autoescape=jinja2.select_autoescape(["html", "xml"]),
 )
 
-# Windows-specific: Before importing cairosvg, need to add cairo dlls, otherwise importing fails
-# https://github.com/Kozea/CairoSVG/issues/392#issuecomment-1631288142
-getattr(os, 'add_dll_directory', lambda _: None)(CAIRO_DLL_DIR)
-import cairosvg
+def _prepare_cairo():
+    """Attempt to add Cairo DLL path (Windows) then import cairosvg.
+
+    If unsuccessful, returns None and PDF generation will be skipped.
+    """
+    # Add DLL directory only if it exists to avoid FileNotFoundError
+    if hasattr(os, "add_dll_directory") and CAIRO_DLL_DIR and os.path.isdir(CAIRO_DLL_DIR):
+        try:
+            os.add_dll_directory(CAIRO_DLL_DIR)
+        except Exception:  # pragma: no cover - defensive
+            pass
+    try:
+        import cairosvg  # type: ignore
+        return cairosvg
+    except Exception as e:  # pragma: no cover - environment dependent
+        # Defer logging until logging configured; use print as fallback
+        try:
+            log.warning(
+                "CairoSVG indisponible (%s). Les PDFs ne seront pas générés, seulement les SVG.",
+                e,
+            )
+        except Exception:
+            print("[WARN] CairoSVG not available, PDFs will be skipped:", e)
+        return None
 
 # Set types we are interested in
 SET_TYPES = (
@@ -143,7 +165,7 @@ class LabelGenerator:
     }
     DEFAULT_PAPER_SIZE = "letter"
 
-    def __init__(self, paper_size=DEFAULT_PAPER_SIZE, output_dir=DEFAULT_OUTPUT_DIR):
+    def __init__(self, paper_size=DEFAULT_PAPER_SIZE, output_dir=DEFAULT_OUTPUT_DIR, generate_pdfs=True):
         self.paper_size = paper_size
         paper = self.PAPER_SIZES[paper_size]
 
@@ -151,15 +173,14 @@ class LabelGenerator:
         self.ignored_sets = IGNORED_SETS
         self.set_types = SET_TYPES
         self.minimum_set_size = MINIMUM_SET_SIZE
-
         self.width = paper["width"]
         self.height = paper["height"]
-
         # These are the deltas between rows and columns
         self.delta_x = (self.width - (2 * self.MARGIN)) / self.COLS
         self.delta_y = (self.height - (2 * self.MARGIN)) / self.ROWS
 
         self.output_dir = Path(output_dir)
+        self.generate_pdfs = generate_pdfs
 
     def generate_labels(self, sets=None):
         if sets:
@@ -167,6 +188,7 @@ class LabelGenerator:
             self.minimum_set_size = 0
             self.set_types = ()
             self.set_codes = [exp.lower() for exp in sets]
+        cairosvg_mod = _prepare_cairo() if self.generate_pdfs else None
 
         page = 1
         labels = self.create_set_label_data()
@@ -193,10 +215,14 @@ class LabelGenerator:
             with open(outfile_svg, "w") as fd:
                 fd.write(output)
 
-            log.info(f"Writing {outfile_pdf}...")
-            with open(outfile_svg, "rb") as fd:
-                cairosvg.svg2pdf(
-                    file_obj=fd, write_to=outfile_pdf,
+            if cairosvg_mod and self.generate_pdfs:
+                log.info(f"Writing {outfile_pdf}...")
+                with open(outfile_svg, "rb") as fd:
+                    cairosvg_mod.svg2pdf(file_obj=fd, write_to=outfile_pdf)
+            else:
+                log.info(
+                    "CairoSVG absent: PDF non généré pour la page %s (SVG disponible)",
+                    page,
                 )
 
             page += 1
@@ -354,10 +380,15 @@ def main():
         ),
         metavar="SET",
     )
+    parser.add_argument(
+        "--no-pdf",
+        action="store_true",
+        help="Do not generate PDF files (only SVG). Useful if Cairo / libcairo is not installed.",
+    )
 
     args = parser.parse_args()
 
-    generator = LabelGenerator(args.paper_size, args.output_dir)
+    generator = LabelGenerator(args.paper_size, args.output_dir, generate_pdfs=not args.no_pdf)
     generator.generate_labels(args.sets)
 
 

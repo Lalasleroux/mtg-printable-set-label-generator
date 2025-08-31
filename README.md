@@ -35,6 +35,10 @@ It requires Python 3.6+ and has a few dependencies.
     pip install -r requirements.txt  # Install dependencies
     python mtglabels/generator.py        # Creates SVG & PDF files in output/
 
+If Cairo / libcairo isn't installed (common on fresh Windows) you'll still get SVGs. To suppress PDF attempts explicitly:
+
+    python mtglabels/generator.py --no-pdf  # Only SVG output
+
 By default, this will create SVG & PDF files.
 The SVG files are vector image files that can be customized further.
 The PDF files are ready to print.
@@ -54,6 +58,7 @@ The labels are designed for US Letter paper but this can be customized:
 
     python mtglabels/generator.py --paper-size=a4   # Use A4 paper size
     python mtglabels/generator.py --help   # Show all options
+    python mtglabels/generator.py --no-pdf  # Disable PDF generation
 
 You can generate labels for specific sets as well:
 
