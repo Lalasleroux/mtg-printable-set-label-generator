@@ -346,7 +346,7 @@ class LabelGenerator:
             row = idx % self.ROWS
             x = self.START_X + col * self.delta_x
             y = self.START_Y + row * self.delta_y
-            labels.append({**item, "x": x, "y": y})
+            labels.append({**item, "x": x, "y": y, "width": self.delta_x})
         return labels
 
     # --- Color + Set combined wide label mode ---

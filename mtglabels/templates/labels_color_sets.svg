@@ -6,20 +6,21 @@
      xmlns:xlink="http://www.w3.org/1999/xlink">
 
     {% for label in labels %}
+        {% set pad = 50 %} {# 5mm internal padding #}
         <g>
             <!-- Color + Set label -->
             <!-- Left: color icon + name -->
             {% if label.color_icon_b64 %}
-                <image x="{{ label.x + 10 }}" y="{{ label.y + 15 }}" width="60" height="60" xlink:href="data:image/svg+xml;base64,{{ label.color_icon_b64 }}" />
+                <image x="{{ label.x + pad }}" y="{{ label.y + 15 }}" width="60" height="60" xlink:href="data:image/svg+xml;base64,{{ label.color_icon_b64 }}" />
             {% endif %}
-            <text x="{{ label.x + 80 }}" y="{{ label.y + 45 }}" font-size="34" dominant-baseline="middle" style="font-weight:bold;font-family:'EB Garamond','Times New Roman',serif">{{ label.color_name }}</text>
+            <text x="{{ label.x + pad + 60 + 10 }}" y="{{ label.y + 45 }}" font-size="34" dominant-baseline="middle" style="font-weight:bold;font-family:'EB Garamond','Times New Roman',serif">{{ label.color_name }}</text>
 
             <!-- Center: set name -->
             <text x="{{ label.x + label.width/2 }}" y="{{ label.y + 45 }}" font-size="30" dominant-baseline="middle" text-anchor="middle" style="font-family:'Source Sans Pro','Helvetica Neue',Helvetica,Arial,sans-serif">{{ label.set_name | escape }}</text>
 
             <!-- Right: set icon -->
             {% if label.set_icon_b64 %}
-                <image x="{{ label.x + label.width - 80 }}" y="{{ label.y + 15 }}" width="60" height="60" xlink:href="data:image/svg+xml;base64,{{ label.set_icon_b64 }}" />
+                <image x="{{ label.x + label.width - pad - 60 }}" y="{{ label.y + 15 }}" width="60" height="60" xlink:href="data:image/svg+xml;base64,{{ label.set_icon_b64 }}" />
             {% endif %}
         </g>
     {% endfor %}
