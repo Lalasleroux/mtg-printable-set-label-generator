@@ -59,6 +59,10 @@ The labels are designed for US Letter paper but this can be customized:
     python mtglabels/generator.py --paper-size=a4   # Use A4 paper size
     python mtglabels/generator.py --help   # Show all options
     python mtglabels/generator.py --no-pdf  # Disable PDF generation
+    python mtglabels/generator.py --color-labels  # Add color (W,U,B,R,G,C) labels first
+    python mtglabels/generator.py --color-set-mode  # Wide 88mm labels: one per (set,color)
+    python mtglabels/generator.py --color-set-mode --portrait  # Wide mode in portrait (two 88mm columns per page)
+    python mtglabels/generator.py --commands-help  # Show extended custom options help (English)
 
 You can generate labels for specific sets as well:
 
@@ -67,6 +71,13 @@ You can generate labels for specific sets as well:
 
 You can change how the labels are actually displayed and rendered by customizing `templates/labels.svg`.
 If you change the fonts, you may also need to resize things to fit.
+
+The wide color+set mode uses a separate template `templates/labels_color_sets.svg` and produces one large
+88mm wide label for every combination of set and color (6 per set: W,U,B,R,G,C). The layout shows:
+* Left: color icon and color name
+* Center: set name
+* Right: set icon
+Any unused horizontal space inside the 88mm cell is left blank on the right side intentionally.
 
 
 ### Tips for printing SVGs

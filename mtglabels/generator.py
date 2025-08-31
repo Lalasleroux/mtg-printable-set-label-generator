@@ -155,7 +155,7 @@ class LabelGenerator:
 
     COLS = 4
     ROWS = 15
-    MARGIN = 200  # in 1/10 mm
+    MARGIN = 100  # in 1/10 mm
     START_X = MARGIN
     START_Y = MARGIN
 
@@ -165,22 +165,36 @@ class LabelGenerator:
     }
     DEFAULT_PAPER_SIZE = "letter"
 
-    def __init__(self, paper_size=DEFAULT_PAPER_SIZE, output_dir=DEFAULT_OUTPUT_DIR, generate_pdfs=True):
+    def __init__(self, paper_size=DEFAULT_PAPER_SIZE, output_dir=DEFAULT_OUTPUT_DIR, generate_pdfs=True, include_color_labels=False, portrait=False, margin_mm=None):
+        """Initialize a label generator with layout and feature flags."""
+        # Store config
         self.paper_size = paper_size
-        paper = self.PAPER_SIZES[paper_size]
+        self.portrait = portrait
+        paper = self.PAPER_SIZES[paper_size].copy()
+        # Swap dimensions if portrait requested
+        if portrait:
+            paper["width"], paper["height"] = paper["height"], paper["width"]
 
-        self.set_codes = []
+        # Filters / selection parameters
+        self.set_codes = []  # optionally narrowed later by CLI args
         self.ignored_sets = IGNORED_SETS
         self.set_types = SET_TYPES
         self.minimum_set_size = MINIMUM_SET_SIZE
+
+        # Paper geometry & margin
         self.width = paper["width"]
         self.height = paper["height"]
-        # These are the deltas between rows and columns
+        if margin_mm is not None:
+            # Convert mm to internal units (1/10 mm)
+            self.MARGIN = int(round(margin_mm * 10))
+        # Recompute derived spacing using (possibly overridden) margin
         self.delta_x = (self.width - (2 * self.MARGIN)) / self.COLS
         self.delta_y = (self.height - (2 * self.MARGIN)) / self.ROWS
 
+        # Output / feature flags
         self.output_dir = Path(output_dir)
         self.generate_pdfs = generate_pdfs
+        self.include_color_labels = include_color_labels
 
     def generate_labels(self, sets=None):
         if sets:
@@ -190,8 +204,14 @@ class LabelGenerator:
             self.set_codes = [exp.lower() for exp in sets]
         cairosvg_mod = _prepare_cairo() if self.generate_pdfs else None
 
+        raw_items = []
+        if self.include_color_labels:
+            raw_items.extend(self.get_color_label_raw())
+        # existing set labels
+        raw_items.extend(self.get_set_label_raw())
+
+        labels = self.layout_labels(raw_items)
         page = 1
-        labels = self.create_set_label_data()
         while labels:
             exps = []
             while labels and len(exps) < (self.ROWS * self.COLS):
@@ -206,9 +226,10 @@ class LabelGenerator:
                 WIDTH=self.width,
                 HEIGHT=self.height,
             )
-            outfile_svg = self.output_dir / f"labels-{self.paper_size}-{page:02}.svg"
+            orient = "-portrait" if self.portrait else ""
+            outfile_svg = self.output_dir / f"labels-{self.paper_size}{orient}-{page:02}.svg"
             outfile_pdf = str(
-                self.output_dir / f"labels-{self.paper_size}-{page:02}.pdf"
+                self.output_dir / f"labels-{self.paper_size}{orient}-{page:02}.pdf"
             )
 
             log.info(f"Writing {outfile_svg}...")
@@ -261,51 +282,183 @@ class LabelGenerator:
         set_data.reverse()
         return set_data
 
-    def create_set_label_data(self):
-        """
-        Create the label data for the sets
-
-        This handles positioning of the label's (x, y) coords
-        """
-        labels = []
-        x = self.START_X
-        y = self.START_Y
-
-        # Get set data from scryfall
-        set_data = self.get_set_data()
-
-        for exp in set_data:
+    def get_set_label_raw(self):
+        raw = []
+        for exp in self.get_set_data():
             name = RENAME_SETS.get(exp["name"], exp["name"])
             icon_resp = requests.get(exp["icon_svg_uri"])
             icon_b64 = None
             if icon_resp.ok:
                 icon_b64 = base64.b64encode(icon_resp.content).decode('utf-8')
-
-            labels.append(
+            raw.append(
                 {
                     "name": name,
                     "code": exp["code"],
                     "date": datetime.strptime(exp["released_at"], "%Y-%m-%d").date(),
                     "icon_url": exp["icon_svg_uri"],
                     "icon_b64": icon_b64,
-                    "x": x,
-                    "y": y,
                 }
             )
+        return raw
 
-            y += self.delta_y
+    COLOR_SYMBOLS = [
+        ("W", "White"),
+        ("U", "Blue"),
+        ("B", "Black"),
+        ("R", "Red"),
+        ("G", "Green"),
+        ("C", "Colorless"),
+    ]
 
-            # Start a new column if needed
-            if len(labels) % self.ROWS == 0:
-                x += self.delta_x
-                y = self.START_Y
+    def get_color_label_raw(self):
+        try:
+            resp = requests.get("https://api.scryfall.com/symbology")
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            symbol_map = {item.get("symbol").strip("{}" ): item for item in data if item.get("svg_uri")}
+        except Exception as e:
+            log.warning("Failed fetching symbology: %s", e)
+            return []
+        raw = []
+        for code, name in self.COLOR_SYMBOLS:
+            info = symbol_map.get(code)
+            if not info:
+                continue
+            icon_resp = requests.get(info["svg_uri"])
+            icon_b64 = None
+            if icon_resp.ok:
+                icon_b64 = base64.b64encode(icon_resp.content).decode('utf-8')
+            raw.append(
+                {
+                    "name": name,
+                    "code": code,
+                    "date": None,
+                    "icon_url": info["svg_uri"],
+                    "icon_b64": icon_b64,
+                }
+            )
+        return raw
 
-            # Start a new page if needed
-            if len(labels) % (self.ROWS * self.COLS) == 0:
-                x = self.START_X
-                y = self.START_Y
-
+    def layout_labels(self, raw_items):
+        labels = []
+        for idx, item in enumerate(raw_items):
+            col = (idx // self.ROWS) % self.COLS
+            row = idx % self.ROWS
+            x = self.START_X + col * self.delta_x
+            y = self.START_Y + row * self.delta_y
+            labels.append({**item, "x": x, "y": y})
         return labels
+
+    # --- Color + Set combined wide label mode ---
+    WIDE_LABEL_MM = 88  # requested width in mm
+
+    def generate_color_set_mode(self, sets=None):
+        """Generate wide labels: one per (set, color)."""
+        if sets:
+            self.ignored_sets = ()
+            self.minimum_set_size = 0
+            self.set_types = ()
+            self.set_codes = [exp.lower() for exp in sets]
+
+        # Fetch once
+        color_entries = self.get_color_label_raw()
+        color_map = {e["code"]: e for e in color_entries}
+        set_data = self.get_set_data()
+
+        # Pre-fetch set icons (avoid duplicate downloads per color)
+        set_icon_cache = {}
+        labels_raw = []
+        for exp in set_data:
+            set_name = RENAME_SETS.get(exp["name"], exp["name"])
+            if exp["code"] not in set_icon_cache:
+                icon_resp = requests.get(exp["icon_svg_uri"])
+                icon_b64 = None
+                if icon_resp.ok:
+                    icon_b64 = base64.b64encode(icon_resp.content).decode('utf-8')
+                set_icon_cache[exp["code"]] = icon_b64
+            set_icon_b64 = set_icon_cache[exp["code"]]
+            for code, _cname in self.COLOR_SYMBOLS:
+                cinfo = color_map.get(code)
+                if not cinfo:
+                    continue
+                labels_raw.append({
+                    "set_name": set_name,
+                    "set_code": exp["code"],
+                    "set_icon_b64": set_icon_b64,
+                    "color_code": code,
+                    "color_name": cinfo["name"],
+                    "color_icon_b64": cinfo["icon_b64"],
+                })
+
+        laid_out = self.layout_wide_labels(labels_raw)
+
+        # Render pages
+        template = ENV.get_template("labels_color_sets.svg")
+        page = 1
+        cairosvg_mod = _prepare_cairo() if self.generate_pdfs else None
+        # Page capacity must use the dynamically computed wide column count, not the default COLS
+        per_page = getattr(self, "_wide_cols", self.COLS) * self.ROWS
+        while laid_out:
+            batch = []
+            while laid_out and len(batch) < per_page:
+                batch.append(laid_out.pop(0))
+            output = template.render(
+                labels=batch,
+                horizontal_guides=self.create_horizontal_cutting_guides(),
+                vertical_guides=self._wide_vertical_guides(),
+                WIDTH=self.width,
+                HEIGHT=self.height,
+            )
+            orient = "-portrait" if self.portrait else ""
+            outfile_svg = self.output_dir / f"labels-color-set-{self.paper_size}{orient}-{page:02}.svg"
+            outfile_pdf = str(self.output_dir / f"labels-color-set-{self.paper_size}{orient}-{page:02}.pdf")
+            log.info(f"Writing {outfile_svg}...")
+            with open(outfile_svg, "w") as fd:
+                fd.write(output)
+            if cairosvg_mod and self.generate_pdfs:
+                log.info(f"Writing {outfile_pdf}...")
+                with open(outfile_svg, "rb") as fd:
+                    cairosvg_mod.svg2pdf(file_obj=fd, write_to=outfile_pdf)
+            page += 1
+
+    def layout_wide_labels(self, raw_items):
+        """Layout wide labels using fixed physical width (WIDE_LABEL_MM)."""
+        cell_w = self.WIDE_LABEL_MM * 10  # convert mm to internal units
+        usable = self.width - 2 * self.MARGIN
+        cols = max(1, int(usable // cell_w))
+        self._wide_cols = cols  # store for guides
+        labels = []
+        for idx, item in enumerate(raw_items):
+            col = idx % cols
+            row = (idx // cols) % self.ROWS
+            page_index = idx // (cols * self.ROWS)
+            x = self.START_X + col * cell_w
+            y = self.START_Y + row * self.delta_y
+            labels.append({**item, "x": x, "y": y, "width": cell_w, "_page": page_index})
+        return labels
+
+    def _wide_vertical_guides(self):
+        if not hasattr(self, "_wide_cols"):
+            return []
+        cell_w = self.WIDE_LABEL_MM * 10
+        guides = []
+        for i in range(self._wide_cols + 1):
+            x = self.MARGIN + i * cell_w
+            if x > (self.width - self.MARGIN):
+                break
+            guides.append({
+                "x1": x,
+                "x2": x,
+                "y1": self.MARGIN / 2,
+                "y2": self.MARGIN * 0.8,
+            })
+            guides.append({
+                "x1": x,
+                "x2": x,
+                "y1": self.height - self.MARGIN / 2,
+                "y2": self.height - self.MARGIN * 0.8,
+            })
+        return guides
 
     def create_horizontal_cutting_guides(self):
         """Create horizontal cutting guides to help cut the labels out straight"""
@@ -385,11 +538,62 @@ def main():
         action="store_true",
         help="Do not generate PDF files (only SVG). Useful if Cairo / libcairo is not installed.",
     )
+    parser.add_argument(
+        "--color-labels",
+        action="store_true",
+        help="Add a label for each MTG color (W,U,B,R,G,C).",
+    )
+    parser.add_argument(
+        "--color-set-mode",
+        action="store_true",
+        help="Generate wide 88mm labels: one per (set,color) with color icon left, set name centered, set icon right.",
+    )
+    parser.add_argument(
+        "--portrait",
+        action="store_true",
+        help="Use portrait orientation (swap paper width/height). Useful with --color-set-mode to get exactly two 88mm columns on Letter/A4.",
+    )
+    parser.add_argument(
+        "--commands-help",
+        action="store_true",
+        help="Show a concise English help about each custom option and exit.",
+    )
+    parser.add_argument(
+        "--margin-mm",
+        type=float,
+        help="Override default margin (20mm) with a custom value in millimeters.",
+    )
 
     args = parser.parse_args()
 
-    generator = LabelGenerator(args.paper_size, args.output_dir, generate_pdfs=not args.no_pdf)
-    generator.generate_labels(args.sets)
+    if args.commands_help:
+        print("Custom options (English):")
+        print("  --paper-size {letter|a4} : Select paper size (default letter).")
+        print("  --no-pdf                 : Skip PDF generation (only SVG output).")
+        print("  --color-labels           : Prepend one label per MTG color (W,U,B,R,G,C).")
+        print("  --color-set-mode         : Wide 88mm labels, one per (set,color) combination.")
+        print("  --portrait               : Portrait orientation (swaps width/height). Useful with wide mode.")
+        print("  --commands-help          : Show this custom help list and exit.")
+        print("  --margin-mm N            : Set page margin to N millimeters (overrides default 20mm).")
+        print("  SET codes (positional)   : Limit generation to specified set codes (e.g. lea mh1).")
+        print("Examples:")
+        print("  python mtglabels/generator.py --color-labels")
+        print("  python mtglabels/generator.py --color-set-mode --portrait lea")
+        print("  python mtglabels/generator.py --paper-size=a4 --no-pdf")
+        return
+
+    generator = LabelGenerator(
+        args.paper_size,
+        args.output_dir,
+        generate_pdfs=not args.no_pdf,
+        include_color_labels=args.color_labels,
+        portrait=args.portrait,
+        margin_mm=args.margin_mm,
+    )
+    if args.color_set_mode:
+        generator.generate_color_set_mode(args.sets)
+    else:
+        generator.generate_labels(args.sets)
 
 
 if __name__ == "__main__":
